@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Scanner Pro (Cloud Powered)</title>
+    <title>AI Scanner Pro (OCR Ultra-Boost)</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
@@ -79,9 +79,8 @@
 </div>
 
 <script type="module">
-    // CONFIGURACIÓN DE OPENROUTER
     const OPENROUTER_API_KEY = "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";
-    const MODEL_NAME = "google/gemini-flash-1.5-8b"; // Modelo ultra rápido y barato
+    const MODEL_NAME = "google/gemini-flash-1.5-8b";
 
     const video = document.getElementById('webcam');
     const canvas = document.getElementById('overlay');
@@ -98,7 +97,7 @@
 
     let objectModel;
 
-    const breathe = () => new Promise(resolve => setTimeout(resolve, 100));
+    const breathe = () => new Promise(resolve => setTimeout(resolve, 150));
 
     async function updateProgress(text, percent, subtext = "") {
         loadingText.innerText = text;
@@ -108,12 +107,12 @@
 
     async function init() {
         try {
-            await updateProgress("Iniciando...", 10, "Cargando detección de objetos...");
+            await updateProgress("Iniciando...", 10, "Cargando detector de objetos...");
             objectModel = await cocoSsd.load();
 
-            await updateProgress("Cargando...", 50, "Configurando cámara...");
+            await updateProgress("Cargando...", 40, "Configurando cámara...");
             const stream = await navigator.mediaDevices.getUserMedia({ 
-                video: { facingMode: 'environment' }, 
+                video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }, 
                 audio: false 
             });
             video.srcObject = stream;
@@ -123,21 +122,17 @@
                 setTimeout(() => loadingOverlay.style.display = 'none', 800);
             };
         } catch (e) {
-            loadingText.innerText = "Error";
-            loadingSubtext.innerText = "Asegúrate de dar permiso a la cámara.";
+            loadingText.innerText = "Error de Cámara";
             console.error(e);
         }
     }
 
-    // FUNCIÓN PARA LLAMAR A OPENROUTER
     async function translateWithOpenRouter(text) {
         try {
             const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
                 method: "POST",
                 headers: {
                     "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
-                    "HTTP-Referer": window.location.href, 
-                    "X-Title": "AI Scanner App",
                     "Content-Type": "application/json"
                 },
                 body: JSON.stringify({
@@ -145,32 +140,20 @@
                     "messages": [
                         {
                             "role": "system",
-                            "content": "You are a professional translator. Translate the text to Chinese characters. ALWAYS provide the Pinyin in parentheses immediately after the characters. Format: Characters (Pinyin). Example: 你好 (nǐ hǎo). Do not add any other text."
+                            "content": "You are a professional translator. Translate text to Chinese. ALWAYS format as: Characters (Pinyin). Example: 你好 (nǐ hǎo). Do not add anything else."
                         },
-                        {
-                            "role": "user",
-                            "content": `Translate this: ${text}`
-                        }
+                        { "role": "user", "content": `Translate this: ${text}` }
                     ]
                 })
             });
-
             const data = await response.json();
             const result = data.choices[0].message.content.trim();
-            
-            // Separar caracteres de Pinyin con una lógica simple
-            // Buscamos el paréntesis para separar
             if (result.includes('(')) {
                 const parts = result.split('(');
-                return {
-                    chars: parts[0].trim(),
-                    pinyin: parts[1].replace(')', '').trim()
-                };
+                return { chars: parts[0].trim(), pinyin: parts[1].replace(')', '').trim() };
             }
             return { chars: result, pinyin: "" };
-
         } catch (error) {
-            console.error("Error en OpenRouter:", error);
             throw error;
         }
     }
@@ -179,9 +162,13 @@
         captureBtn.disabled = true;
 
         try {
-            // 1. DETECCIÓN DE OBJETOS (Local)
+            // 1. OBJETOS (Redimensionado para velocidad)
             objVal.innerText = "Analizando...";
-            const predictions = await objectModel.detect(video);
+            const detCanvas = document.createElement('canvas');
+            const dCtx = detCanvas.getContext('2d');
+            detCanvas.width = 300; detCanvas.height = 300;
+            dCtx.drawImage(video, 0, 0, 300, 300);
+            const predictions = await objectModel.detect(detCanvas);
             
             const ctx = canvas.getContext('2d');
             canvas.width = video.videoWidth;
@@ -190,35 +177,42 @@
 
             if (predictions.length > 0) {
                 objVal.innerText = predictions[0].class;
+                const scaleX = canvas.width / 300;
+                const scaleY = canvas.height / 300;
                 ctx.strokeStyle = "#00ff88";
                 ctx.lineWidth = 4;
-                ctx.strokeRect(predictions[0].bbox[0], predictions[0].bbox[1], predictions[0].bbox[2], predictions[0].bbox[3]);
+                ctx.strokeRect(predictions[0].bbox[0]*scaleX, predictions[0].bbox[1]*scaleY, predictions[0].bbox[2]*scaleX, predictions[0].bbox[3]*scaleY);
             } else {
                 objVal.innerText = "No detectado";
             }
 
             await breathe();
 
-            // 2. OCR (Local)
+            // 2. OCR CON PRE-PROCESAMIENTO (Filtro de Contraste)
             ocrVal.innerText = "Escaneando texto...";
-            const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = video.videoWidth;
-            tempCanvas.height = video.videoHeight;
-            tempCanvas.getContext('2d').drawImage(video, 0, 0);
+            const procCanvas = document.createElement('canvas');
+            procCanvas.width = video.videoWidth;
+            procCanvas.height = video.videoHeight;
+            const pCtx = procCanvas.getContext('2d');
+            
+            // Dibujar imagen original
+            pCtx.drawImage(video, 0, 0);
+            
+            // APLICAR FILTRO MÁGICO: Escala de grises + Contraste alto
+            // Esto hace que el texto sea mucho más legible para Tesseract
+            pCtx.filter = 'grayscale(100%) contrast(250%) brightness(110%)';
+            pCtx.drawImage(procCanvas, 0, 0);
 
-            const { data: { text } } = await Tesseract.recognize(tempCanvas, 'eng');
-            const cleanText = text.trim();
+            // Usamos 'eng+spa' para que reconozca español e inglés
+            const { data: { text } } = await Tesseract.recognize(procCanvas, 'eng+spa');
+            const cleanText = text.trim().replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑ ]/g, ''); // Limpia ruido extra
             ocrVal.innerText = cleanText || "Sin texto";
 
-            if (cleanText) {
+            if (cleanText.length > 2) {
                 await breathe();
-
-                // 3. TRADUCCIÓN (Cloud via OpenRouter)
                 transVal.innerText = "Traduciendo...";
                 pinyinVal.innerText = "";
-                
                 const translation = await translateWithOpenRouter(cleanText);
-                
                 transVal.innerText = translation.chars;
                 pinyinVal.innerText = translation.pinyin;
             } else {
@@ -237,6 +231,5 @@
     captureBtn.addEventListener('click', analyze);
     init();
 </script>
-
 </body>
 </html>
