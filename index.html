@@ -3,11 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Lite Scanner Pro</title>
+    <title>AI Scanner Pro (Cloud Powered)</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@xenova/transformers"></script>
 
     <style>
         body { font-family: sans-serif; margin: 0; background: #121212; color: white; overflow: hidden; }
@@ -49,7 +48,7 @@
 <body>
 
 <div id="loading-overlay">
-    <h2 id="loading-text">Cargando IA...</h2>
+    <h2 id="loading-text">Iniciando IA...</h2>
     <div class="progress-container"><div id="progress-bar"></div></div>
     <p id="loading-subtext" class="status-msg">Preparando motores...</p>
 </div>
@@ -80,7 +79,9 @@
 </div>
 
 <script type="module">
-    import { pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.6.0';
+    // CONFIGURACIÓN DE OPENROUTER
+    const OPENROUTER_API_KEY = "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";
+    const MODEL_NAME = "google/gemini-flash-1.5-8b"; // Modelo ultra rápido y barato
 
     const video = document.getElementById('webcam');
     const canvas = document.getElementById('overlay');
@@ -96,10 +97,8 @@
     const pinyinVal = document.getElementById('pinyin-val');
 
     let objectModel;
-    let translator;
 
-    // Función para pausar y permitir que la UI se actualice
-    const breathe = () => new Promise(resolve => setTimeout(resolve, 150));
+    const breathe = () => new Promise(resolve => setTimeout(resolve, 100));
 
     async function updateProgress(text, percent, subtext = "") {
         loadingText.innerText = text;
@@ -112,17 +111,7 @@
             await updateProgress("Iniciando...", 10, "Cargando detección de objetos...");
             objectModel = await cocoSsd.load();
 
-            await updateProgress("Cargando...", 30, "Descargando modelo de traducción (esto es pesado)...");
-            translator = await pipeline('translation', 'Xenova/m2m100_418M', {
-                progress_callback: (data) => {
-                    if (data.status === 'progress') {
-                        let p = 30 + (data.progress * 0.6);
-                        updateProgress("Cargando modelos...", p, "Descargando archivos de IA...");
-                    }
-                }
-            });
-
-            await updateProgress("Cámara...", 90, "Solicitando acceso a la cámara...");
+            await updateProgress("Cargando...", 50, "Configurando cámara...");
             const stream = await navigator.mediaDevices.getUserMedia({ 
                 video: { facingMode: 'environment' }, 
                 audio: false 
@@ -134,9 +123,55 @@
                 setTimeout(() => loadingOverlay.style.display = 'none', 800);
             };
         } catch (e) {
-            loadingText.innerText = "Error de Memoria";
-            loadingSubtext.innerText = "El dispositivo es muy limitado para este modelo.";
+            loadingText.innerText = "Error";
+            loadingSubtext.innerText = "Asegúrate de dar permiso a la cámara.";
             console.error(e);
+        }
+    }
+
+    // FUNCIÓN PARA LLAMAR A OPENROUTER
+    async function translateWithOpenRouter(text) {
+        try {
+            const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+                    "HTTP-Referer": window.location.href, 
+                    "X-Title": "AI Scanner App",
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    "model": MODEL_NAME,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": "You are a professional translator. Translate the text to Chinese characters. ALWAYS provide the Pinyin in parentheses immediately after the characters. Format: Characters (Pinyin). Example: 你好 (nǐ hǎo). Do not add any other text."
+                        },
+                        {
+                            "role": "user",
+                            "content": `Translate this: ${text}`
+                        }
+                    ]
+                })
+            });
+
+            const data = await response.json();
+            const result = data.choices[0].message.content.trim();
+            
+            // Separar caracteres de Pinyin con una lógica simple
+            // Buscamos el paréntesis para separar
+            if (result.includes('(')) {
+                const parts = result.split('(');
+                return {
+                    chars: parts[0].trim(),
+                    pinyin: parts[1].replace(')', '').trim()
+                };
+            }
+            return { chars: result, pinyin: "" };
+
+        } catch (error) {
+            console.error("Error en OpenRouter:", error);
+            throw error;
         }
     }
 
@@ -144,7 +179,7 @@
         captureBtn.disabled = true;
 
         try {
-            // --- PASO 1: OBJETOS ---
+            // 1. DETECCIÓN DE OBJETOS (Local)
             objVal.innerText = "Analizando...";
             const predictions = await objectModel.detect(video);
             
@@ -162,10 +197,9 @@
                 objVal.innerText = "No detectado";
             }
 
-            // --- PAUSA CRÍTICA PARA QUE LA UI NO SE TIELDE ---
             await breathe();
 
-            // --- PASO 2: OCR ---
+            // 2. OCR (Local)
             ocrVal.innerText = "Escaneando texto...";
             const tempCanvas = document.createElement('canvas');
             tempCanvas.width = video.videoWidth;
@@ -177,16 +211,16 @@
             ocrVal.innerText = cleanText || "Sin texto";
 
             if (cleanText) {
-                // --- PAUSA CRÍTICA 2 ---
                 await breathe();
 
-                // --- PASO 3: TRADUCCIÓN ---
+                // 3. TRADUCCIÓN (Cloud via OpenRouter)
                 transVal.innerText = "Traduciendo...";
                 pinyinVal.innerText = "";
                 
-                const output = await translator(cleanText, { tgt_lang: 'zh' });
-                transVal.innerText = output[0].translation_text;
-                pinyinVal.innerText = "(Pinyin no disponible localmente)";
+                const translation = await translateWithOpenRouter(cleanText);
+                
+                transVal.innerText = translation.chars;
+                pinyinVal.innerText = translation.pinyin;
             } else {
                 transVal.innerText = "-";
             }
@@ -194,14 +228,13 @@
         } catch (err) {
             console.error(err);
             objVal.innerText = "Error";
-            ocrVal.innerText = "Error en el proceso";
+            ocrVal.innerText = "Error en proceso";
         } finally {
             captureBtn.disabled = false;
         }
     }
 
     captureBtn.addEventListener('click', analyze);
-
     init();
 </script>
 
