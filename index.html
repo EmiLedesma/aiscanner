@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Lite Scanner</title>
+    <title>AI Lite Scanner Pro</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
@@ -12,55 +12,70 @@
     <style>
         body { font-family: sans-serif; margin: 0; background: #121212; color: white; overflow: hidden; }
         #container { position: relative; width: 100vw; height: 100vh; display: flex; flex-direction: column; }
-        video { width: 100%; height: 60%; object-fit: cover; background: black; }
-        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 60%; pointer-events: none; }
+        video { width: 100%; height: 55%; object-fit: cover; background: black; }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 55%; pointer-events: none; }
         
         #ui-panel { 
-            height: 40%; width: 100%; background: #1e1e1e; 
+            height: 45%; width: 100%; background: #1e1e1e; 
             padding: 15px; box-sizing: border-box; overflow-y: auto;
             border-top: 2px solid #333;
         }
-        .result-item { margin-bottom: 10px; padding: 8px; background: #2d2d2d; border-radius: 5px; }
-        .label { color: #00ff88; font-size: 0.8rem; font-weight: bold; }
-        .value { font-size: 1.1rem; display: block; }
-        .pinyin { color: #ffcc00; font-style: italic; font-size: 0.9rem; }
+        .result-item { margin-bottom: 12px; padding: 10px; background: #2d2d2d; border-radius: 8px; border-left: 4px solid #00ff88; }
+        .label { color: #00ff88; font-size: 0.75rem; font-weight: bold; text-transform: uppercase; }
+        .value { font-size: 1.1rem; display: block; margin-top: 4px; min-height: 1.2em; }
+        .pinyin { color: #ffcc00; font-style: italic; font-size: 0.9rem; margin-top: 4px; display: block; }
         
         .controls { 
-            position: absolute; bottom: 62%; left: 50%; transform: translateX(-50%);
+            position: absolute; bottom: 58%; left: 50%; transform: translateX(-50%);
             z-index: 10;
         }
         button {
-            padding: 12px 20px; border-radius: 50px; border: none;
-            background: #00ff88; color: black; font-weight: bold;
+            padding: 15px 30px; border-radius: 50px; border: none;
+            background: #00ff88; color: black; font-weight: bold; font-size: 1rem;
+            box-shadow: 0 4px 15px rgba(0,255,136,0.4);
         }
-        button:disabled { background: #555; }
+        button:disabled { background: #555; box-shadow: none; }
 
-        /* BARRA DE CARGA */
         #loading-overlay {
             position: fixed; top:0; left:0; width:100%; height:100%;
-            background: rgba(0,0,0,0.9); display: flex; flex-direction: column;
+            background: rgba(0,0,0,0.95); display: flex; flex-direction: column;
             justify-content: center; align-items: center; z-index: 100; text-align: center; padding: 20px;
         }
-        .progress-container { width: 80%; background: #333; height: 10px; border-radius: 5px; margin-top: 20px; overflow: hidden; }
+        .progress-container { width: 70%; background: #333; height: 8px; border-radius: 4px; margin-top: 20px; overflow: hidden; }
         #progress-bar { width: 0%; height: 100%; background: #00ff88; transition: width 0.3s; }
+        .status-msg { font-size: 0.9rem; color: #aaa; margin-top: 10px; }
     </style>
 </head>
 <body>
 
 <div id="loading-overlay">
-    <h2 id="loading-text">Iniciando IA...</h2>
+    <h2 id="loading-text">Cargando IA...</h2>
     <div class="progress-container"><div id="progress-bar"></div></div>
-    <p id="loading-subtext" style="font-size: 0.8rem; color: #888;">Descargando modelos ligeros...</p>
+    <p id="loading-subtext" class="status-msg">Preparando motores...</p>
 </div>
 
 <div id="container">
     <video id="webcam" autoplay playsinline muted></video>
     <canvas id="overlay"></canvas>
-    <div class="controls"><button id="capture-btn">ANALIZAR</button></div>
+    
+    <div class="controls">
+        <button id="capture-btn">ANALIZAR AHORA</button>
+    </div>
+
     <div id="ui-panel">
-        <div class="result-item"><span class="label">OBJETO:</span><span id="obj-val" class="value">-</span></div>
-        <div class="result-item"><span class="label">TEXTO:</span><span id="ocr-val" class="value">-</span></div>
-        <div class="result-item"><span class="label">CHINO:</span><span id="trans-val" class="value">-</span><span id="pinyin-val" class="pinyin"></span></div>
+        <div class="result-item">
+            <span class="label">Objeto Detectado</span>
+            <span id="obj-val" class="value">Esperando...</span>
+        </div>
+        <div class="result-item">
+            <span class="label">Texto Escaneado</span>
+            <span id="ocr-val" class="value">Esperando...</span>
+        </div>
+        <div class="result-item">
+            <span class="label">Traducción al Chino</span>
+            <span id="trans-val" class="value">-</span>
+            <span id="pinyin-val" class="pinyin"></span>
+        </div>
     </div>
 </div>
 
@@ -75,35 +90,39 @@
     const loadingSubtext = document.getElementById('loading-subtext');
     const progressBar = document.getElementById('progress-bar');
 
-    let objectModel, translator;
+    const objVal = document.getElementById('obj-val');
+    const ocrVal = document.getElementById('ocr-val');
+    const transVal = document.getElementById('trans-val');
+    const pinyinVal = document.getElementById('pinyin-val');
 
-    async function updateProgress(text, percent) {
+    let objectModel;
+    let translator;
+
+    // Función para pausar y permitir que la UI se actualice
+    const breathe = () => new Promise(resolve => setTimeout(resolve, 150));
+
+    async function updateProgress(text, percent, subtext = "") {
         loadingText.innerText = text;
         progressBar.style.width = percent + '%';
-        loadingSubtext.innerText = `Progreso: ${Math.round(percent)}%`;
+        if(subtext) loadingSubtext.innerText = subtext;
     }
 
     async function init() {
         try {
-            // 1. Carga de Objetos
-            await updateProgress("Cargando Detector...", 10);
+            await updateProgress("Iniciando...", 10, "Cargando detección de objetos...");
             objectModel = await cocoSsd.load();
 
-            // 2. Carga de Traducción (USANDO MODELO CUANTIZADO Y MÁS PEQUEÑO)
-            // Usamos un callback para la barra de progreso
-            await updateProgress("Cargando Traductor (esto tarda)...", 30);
-            
+            await updateProgress("Cargando...", 30, "Descargando modelo de traducción (esto es pesado)...");
             translator = await pipeline('translation', 'Xenova/m2m100_418M', {
                 progress_callback: (data) => {
                     if (data.status === 'progress') {
-                        // Ajustamos el porcentaje para que se vea fluido entre 30% y 90%
                         let p = 30 + (data.progress * 0.6);
-                        updateProgress("Descargando modelos...", p);
+                        updateProgress("Cargando modelos...", p, "Descargando archivos de IA...");
                     }
                 }
             });
 
-            await updateProgress("Configurando Cámara...", 95);
+            await updateProgress("Cámara...", 90, "Solicitando acceso a la cámara...");
             const stream = await navigator.mediaDevices.getUserMedia({ 
                 video: { facingMode: 'environment' }, 
                 audio: false 
@@ -111,62 +130,80 @@
             video.srcObject = stream;
 
             video.onloadedmetadata = () => {
-                updateProgress("¡Listo!", 100);
-                setTimeout(() => loadingOverlay.style.display = 'none', 500);
+                updateProgress("¡Listo!", 100, "Todo preparado.");
+                setTimeout(() => loadingOverlay.style.display = 'none', 800);
             };
-
         } catch (e) {
             loadingText.innerText = "Error de Memoria";
-            loadingSubtext.innerText = "Tu móvil no tiene suficiente RAM para este modelo. Prueba en PC o usa una versión más ligera.";
+            loadingSubtext.innerText = "El dispositivo es muy limitado para este modelo.";
             console.error(e);
         }
     }
 
-    async function detectObjects() {
-        const predictions = await objectModel.detect(video);
-        const ctx = canvas.getContext('2d');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        if (predictions.length > 0) {
-            document.getElementById('obj-val').innerText = predictions[0].class;
-            ctx.strokeStyle = "#00ff88";
-            ctx.lineWidth = 4;
-            ctx.strokeRect(predictions[0].bbox[0], predictions[0].bbox[1], predictions[0].bbox[2], predictions[0].bbox[3]);
-        } else {
-            document.getElementById('obj-val').innerText = "No detectado";
-        }
-    }
-
-    async function runOCRAndTranslate() {
+    async function analyze() {
         captureBtn.disabled = true;
-        const tempCanvas = document.createElement('canvas');
-        tempCanvas.width = video.videoWidth;
-        tempCanvas.height = video.videoHeight;
-        tempCanvas.getContext('2d').drawImage(video, 0, 0);
 
         try {
+            // --- PASO 1: OBJETOS ---
+            objVal.innerText = "Analizando...";
+            const predictions = await objectModel.detect(video);
+            
+            const ctx = canvas.getContext('2d');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (predictions.length > 0) {
+                objVal.innerText = predictions[0].class;
+                ctx.strokeStyle = "#00ff88";
+                ctx.lineWidth = 4;
+                ctx.strokeRect(predictions[0].bbox[0], predictions[0].bbox[1], predictions[0].bbox[2], predictions[0].bbox[3]);
+            } else {
+                objVal.innerText = "No detectado";
+            }
+
+            // --- PAUSA CRÍTICA PARA QUE LA UI NO SE TIELDE ---
+            await breathe();
+
+            // --- PASO 2: OCR ---
+            ocrVal.innerText = "Escaneando texto...";
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = video.videoWidth;
+            tempCanvas.height = video.videoHeight;
+            tempCanvas.getContext('2d').drawImage(video, 0, 0);
+
             const { data: { text } } = await Tesseract.recognize(tempCanvas, 'eng');
             const cleanText = text.trim();
-            document.getElementById('ocr-val').innerText = cleanText || "Sin texto";
+            ocrVal.innerText = cleanText || "Sin texto";
 
             if (cleanText) {
-                document.getElementById('trans-val').innerText = "Traduciendo...";
+                // --- PAUSA CRÍTICA 2 ---
+                await breathe();
+
+                // --- PASO 3: TRADUCCIÓN ---
+                transVal.innerText = "Traduciendo...";
+                pinyinVal.innerText = "";
+                
                 const output = await translator(cleanText, { tgt_lang: 'zh' });
-                document.getElementById('trans-val').innerText = output[0].translation_text;
+                transVal.innerText = output[0].translation_text;
+                pinyinVal.innerText = "(Pinyin no disponible localmente)";
+            } else {
+                transVal.innerText = "-";
             }
+
         } catch (err) {
-            document.getElementById('ocr-val').innerText = "Error en proceso";
+            console.error(err);
+            objVal.innerText = "Error";
+            ocrVal.innerText = "Error en el proceso";
+        } finally {
+            captureBtn.disabled = false;
         }
-        captureBtn.disabled = false;
     }
 
-    captureBtn.addEventListener('click', async () => {
-        await detectObjects();
-        await runOCRAndTranslate();
-    });
+    captureBtn.addEventListener('click', analyze);
 
     init();
 </script>
+
 </body>
 </html>
