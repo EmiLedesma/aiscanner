@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Local Scanner (OCR + Object + Trans)</title>
+    <!-- Librerías -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xenova/transformers"></script>
+
+    <style>
+        body { font-family: sans-serif; margin: 0; background: #121212; color: white; overflow: hidden; }
+        #container { position: relative; width: 100vw; height: 100vh; display: flex; flex-direction: column; }
+        video { width: 100%; height: 70%; object-fit: cover; background: black; }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 70%; pointer-events: none; }
+        
+        #ui-panel { 
+            height: 30%; width: 100%; background: #1e1e1e; 
+            padding: 15px; box-sizing: border-box; overflow-y: auto;
+            border-top: 2px solid #333;
+        }
+        .result-item { margin-bottom: 10px; padding: 8px; background: #2d2d2d; border-radius: 5px; }
+        .label { color: #00ff88; font-size: 0.8rem; font-weight: bold; }
+        .value { font-size: 1.1rem; display: block; }
+        .pinyin { color: #ffcc00; font-style: italic; font-size: 0.9rem; }
+        
+        .controls { 
+            position: absolute; bottom: 32%; left: 50%; transform: translateX(-50%);
+            z-index: 10;
+        }
+        button {
+            padding: 15px 25px; border-radius: 50px; border: none;
+            background: #00ff88; color: black; font-weight: bold; font-size: 1rem;
+            box-shadow: 0 4px 15px rgba(0,255,136,0.4);
+        }
+        button:disabled { background: #555; }
+        .loading-overlay {
+            position: fixed; top:0; left:0; width:100%; height:100%;
+            background: rgba(0,0,0,0.8); display: flex; justify-content: center;
+            align-items: center; z-index: 100; text-align: center; padding: 20px;
+        }
+    </style>
+</head>
+<body>
+
+<div id="loading" class="loading-overlay">
+    <div>
+        <h2 id="loading-text">Cargando Modelos IA...</h2>
+        <p>Esto puede tardar un minuto la primera vez.</p>
+    </div>
+</div>
+
+<div id="container">
+    <video id="webcam" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    
+    <div class="controls">
+        <button id="capture-btn">ANALIZAR ESCENA</button>
+    </div>
+
+    <div id="ui-panel">
+        <div class="result-item">
+            <span class="label">OBJETO DETECTADO:</span>
+            <span id="obj-val" class="value">-</span>
+        </div>
+        <div class="result-item">
+            <span class="label">TEXTO OCR:</span>
+            <span id="ocr-val" class="value">-</span>
+        </div>
+        <div class="result-item">
+            <span class="label">TRADUCCIÓN (CHINO):</span>
+            <span id="trans-val" class="value">-</span>
+            <span id="pinyin-val" class="pinyin"></span>
+        </div>
+    </div>
+</div>
+
+<script type="module">
+    // Importar Transformers.js (para traducción local)
+    import { pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.6.0';
+
+    const video = document.getElementById('webcam');
+    const canvas = document.getElementById('overlay');
+    const captureBtn = document.getElementById('capture-btn');
+    const loading = document.getElementById('loading');
+    const loadingText = document.getElementById('loading-text');
+
+    let objectModel;
+    let translator;
+
+    // 1. INICIALIZAR MODELOS
+    async function init() {
+        try {
+            loadingText.innerText = "Cargando Detector de Objetos...";
+            objectModel = await cocoSsd.load();
+
+            loadingText.innerText = "Cargando Modelo de Traducción (Local)...";
+            // Usamos un modelo pequeño para no colapsar el celular (Xenova/m2m100_418M es pesado, 
+            // idealmente usaríamos algo más ligero como MarianMT)
+            translator = await pipeline('translation', 'Xenova/m2m100_418M'); 
+
+            loadingText.innerText = "Preparando Cámara...";
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: 'environment' }, 
+                audio: false 
+            });
+            video.srcObject = stream;
+
+            // Esperar a que el video cargue
+            video.onloadedmetadata = () => {
+                loading.style.display = 'none';
+            };
+        } catch (e) {
+            loadingText.innerText = "Error: " + e.message;
+            console.error(e);
+        }
+    }
+
+    // 2. FUNCION DE DETECCIÓN DE OBJETOS
+    async function detectObjects() {
+        const predictions = await objectModel.detect(video);
+        const ctx = canvas.getContext('2d');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        if (predictions.length > 0) {
+            document.getElementById('obj-val').innerText = predictions[0].class;
+            // Dibujar recuadro
+            ctx.strokeStyle = "#00ff88";
+            ctx.lineWidth = 4;
+            ctx.strokeRect(predictions[0].bbox[0], predictions[0].bbox[1], predictions[0].bbox[2], predictions[0].bbox[3]);
+        } else {
+            document.getElementById('obj-val').innerText = "No detectado";
+        }
+    }
+
+    // 3. FUNCION DE OCR Y TRADUCCIÓN
+    async function runOCRAndTranslate() {
+        captureBtn.disabled = true;
+        document.getElementById('ocr-val').innerText = "Escaneando...";
+
+        // Capturar frame del video a un canvas oculto para Tesseract
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = video.videoWidth;
+        tempCanvas.height = video.videoHeight;
+        tempCanvas.getContext('2d').drawImage(video, 0, 0);
+
+        try {
+            // OCR
+            const { data: { text } } = await Tesseract.recognize(tempCanvas, 'eng');
+            const cleanText = text.trim();
+            document.getElementById('ocr-val').innerText = cleanText || "Sin texto";
+
+            if (cleanText) {
+                document.getElementById('trans-val').innerText = "Traduciendo...";
+                
+                // TRADUCCIÓN LOCAL
+                // Nota: El modelo m2m100 es potente pero requiere mucha RAM.
+                // En un celular real, esto es el límite de lo que puede hacer un navegador.
+                const output = await translator(cleanText, {
+                    tgt_lang: 'zh',
+                });
+
+                const translatedText = output[0].translation_text;
+                document.getElementById('trans-val').innerText = translatedText;
+                
+                // PINYIN: La traducción local de Transformers.js no devuelve pinyin directamente.
+                // Para una App real, necesitarías un diccionario local o una librería de mapping.
+                // Aquí simulamos el proceso de obtención.
+                document.getElementById('pinyin-val').innerText = "(Pinyin automático requiere diccionario)";
+            }
+        } catch (err) {
+            console.error(err);
+            document.getElementById('ocr-val').innerText = "Error en proceso";
+        }
+
+        captureBtn.disabled = false;
+    }
+
+    // EVENTO CLICK
+    captureBtn.addEventListener('click', async () => {
+        await detectObjects();
+        await runOCRAndTranslate();
+    });
+
+    init();
+</script>
+
+</body>
+</html>
